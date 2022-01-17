@@ -1,0 +1,677 @@
+import pandas as pd
+import numpy as np
+import re
+
+# The file must be taken from AVBO or DATA team
+mol=pd.read_csv('mol dec1.csv',float_precision='round_trip',parse_dates=["Transaction Date"],low_memory=False,dtype={'Card No':str})
+
+# This file will be availabl on google sheet
+ewallet=pd.read_excel('e wallet dec1.xlsx') 
+
+
+# This file will be availabl on google sheet
+mapping=pd.read_excel('mapping.xlsx')
+
+
+# This file will be availabl on google sheet
+status_mapping=pd.read_excel('status mapping.xlsx')
+
+# Add '#' sign in front of card numbers to avoud auto formatting in csv
+mol['Card No']='#'+mol['Card No']
+
+# 1. Filter out Normal and Sales in Order type column
+### TO BE REMOVED SOON ###
+mol=mol.loc[mol['Order Type']=='Normal']
+
+# 2. Remove duplicate fees from Admin, Shipping, Insurance, Convenience and Unique fees
+mask = mol.duplicated(['Order Number','Shipping Fee'])
+mol.loc[mask, 'Shipping Fee'] = 0.0
+mol['Shipping Fee'] = mol['Shipping Fee'].astype(float)
+mask = mol.duplicated(['Order Number','Admin Fee'])
+mol.loc[mask, 'Admin Fee'] = 0.0
+mol['Admin Fee'] = mol['Admin Fee'].astype(float)
+mask = mol.duplicated(['Order Number','Convenience Fee'])
+mol.loc[mask, 'Convenience Fee'] = 0.0
+mol['Convenience Fee'] = mol['Convenience Fee'].astype(float)
+mask = mol.duplicated(['Order Number','Insurance Fee'])
+mol.loc[mask, 'Insurance Fee'] = 0.0
+mol['Insurance Fee'] = mol['Insurance Fee'].astype(float)
+mask = mol.duplicated(['Order Number','Unique Code Fee'])
+mol.loc[mask, 'Unique Code Fee'] = 0.0
+mol['Unique Code Fee'] = mol['Unique Code Fee'].astype(float)
+mol['Admin Fee'].fillna(0,inplace=True)
+mol['Shipping Fee'].fillna(0,inplace=True)
+mol['Insurance Fee'].fillna(0,inplace=True)
+mol['Convenience Fee'].fillna(0,inplace=True)
+mol['Unique Code Fee'].fillna(0,inplace=True)
+
+# 3. Calculating Subtotal and totals with all the fees
+mol["Sub Total"]=mol['Price']*mol["Qty"]
+mol["Total"]=mol['Sub Total']+mol['Admin Fee']+mol['Shipping Fee']+mol['Insurance Fee']+mol['Convenience Fee']+mol['Unique Code Fee']
+
+# 4. Separating Payment type column into Payment type and payment type 2
+mol.insert(29, "Payment Amount 1", "")
+splitted = mol['Payment Type 1'].str.split(':', expand=True)
+mol['Payment Type 1'] = splitted[0]
+mol['Payment Amount 1'] = splitted[1].astype(float).fillna(0)
+mol.insert(31, "Payment Amount 2", "")
+splitted = mol['Payment Type 2'].str.split(':', expand=True)
+mol['Payment Type 2'] = splitted[0]
+mol['Payment Amount 2'] = splitted[1].astype(float).fillna(0)
+
+# 5. Payment received from populated based on payment types
+mol['Temp1']=mol['Payment Type 1'].fillna('0')+ '&'+mol['Payment Type 2'].fillna('0')
+
+def mapping_mixed_payment(columns,data):
+    ref=[]
+    for index, values in columns.items():
+        if '0' not in values:
+            ref.append('mixed payment')
+        else:
+            ref.append('')
+    data['Temp2']=ref
+    
+mapping_mixed_payment(mol['Temp1'],mol)
+
+def mapping_deduct_balance(column,data):
+    ref=[]
+    for index, values in column.items():
+        if 'balance' in values and '0' in values:
+            ref.append('deduct balance')
+        elif 'wallet' in values and '0' in values:
+            ref.append('deduct balance')
+        elif 'Egift' in values and '0' in values:
+            ref.append('deduct balance')
+        else:
+            ref.append('external payment')
+    data['Temp3']=ref
+            
+mapping_deduct_balance(mol['Temp1'],mol)
+
+mol['Payment received from']=np.where(mol['Temp2']=='mixed payment',mol['Temp2'],mol['Temp3'])
+
+mol.drop(['Temp1','Temp2','Temp3'], axis = 1,inplace=True)
+
+# 6. Mapping the status column against Item/Order/Transaction status
+
+ref=[]
+for index,values in mol['Transaction Status'].astype(str).items():
+    if values.startswith('void'):
+        ref.append(values[0:4])
+    else:
+        ref.append('')
+mol['Temp']=ref
+mol['Temp']=np.where(mol['Temp']!='void',mol['Transaction Status'],mol['Temp'])
+    
+mol['Transaction Status']=mol['Temp']
+mol=mol.drop(['Temp'],axis=1)
+
+
+mol['Item Status x Order Status x Transaction Status']=mol['Item Status']+' '+mol['Order Status']+' '+mol['Transaction Status']
+
+
+mol=pd.merge(mol,status_mapping,on='Item Status x Order Status x Transaction Status',how='left')
+mol.drop(['Item Status x Order Status x Transaction Status'], axis = 1,inplace=True)
+
+# 7. Create another column to check against e-wallet file and lookup the 'checking' to return from column Z of ewallet
+ewallet=ewallet[["Order Number","Checking"]]
+mol=pd.merge(mol,ewallet,on='Order Number',how='left')
+
+mol = mol.rename({'Checking': 'Checking Pulsa/PLN/e-wallet'}, axis=1)
+
+# 8. Merge program name X merchant name in separate columns and populate payment type and 'dibuat oleh'
+mol['Merchant x Program Name']=mol['Merchant'] + " " + mol['Program Name']
+
+mapping1=mapping[["Unnamed: 0",'Unnamed: 3','Unnamed: 4']]
+mapping1 = mapping1.rename({'Unnamed: 0': 'Merchant x Program Name', 'Unnamed: 3': 'Payment Type',
+                           'Unnamed: 4': 'Revenue/Expense Booked by'}, axis=1)
+
+mol=pd.merge(mol,mapping1,on='Merchant x Program Name',how='left')
+
+mol=mol.drop(['Merchant x Program Name'],axis=1)
+
+# 9. Compare payment type with card number. If card number is 8 digits , change payment type to 'report in egift used'
+ref=[]
+for index,values in mol['Card No'].astype(str).items():
+    if len(values)==9:
+        ref.append('Y')
+    else:
+        ref.append("")
+mol['temp']=ref        
+
+
+mol['Payment Type_y']=np.where(mol['temp']=='Y','report in egift used',mol['Payment Type_y'])
+mol['Revenue/Expense Booked by']=np.where(mol['temp']=="Y",'report in egift used',mol['Revenue/Expense Booked by'])
+
+mol.drop(['temp'],axis=1,inplace=True)
+
+ref=[]
+ref2=[]
+
+for index,values in mol["Payment received from"].items():
+    if values=="external payment":
+        ref.append("Y")
+    else:
+        ref.append("")
+        
+for index, values in mol["Payment Type_y"].items():
+    if values=='Postpaid':
+        ref2.append("Y")
+    else:
+        ref2.append("")
+mol['Temp']=ref
+mol["Temp2"]=ref2
+mol["Temp3"]=mol["Temp"]+mol['Temp2']
+
+
+mol['Revenue/Expense Booked by']=np.where(mol['Temp3']=='YY','Accounting',
+                                          mol['Revenue/Expense Booked by'])
+mol.drop(["Temp",'Temp2',"Temp3"],axis=1,inplace=True)
+
+# 10. Add new columns 'fees booked by' and compare it with 'Payment type_y' column
+
+def map_status_4(data,column1,column2,column3):
+    ref=[]
+    ref2=[]
+    ref3=[]
+    for index,values in column1.items():
+        if values=='Corporate':
+            ref.append('Y')
+        else:
+            ref.append("")
+    for index, values in column2.items():
+        if values=='Prepaid':
+            ref2.append('Y')
+        else:
+            ref2.append("")
+    for index, values in column3.items():
+        if 'item' in values:
+            ref3.append("Y")
+        elif 'physical voucher' in values:
+            ref3.append('Y')
+        else:
+            ref3.append("")
+    data['Temp']=ref
+    data['Temp1']=ref2
+    data["Temp2"]=ref3
+    data['Temp4']=data['Temp']+data['Temp1']+data["Temp2"]
+    data.drop(['Temp1','Temp','Temp2'],axis=1,inplace=True)
+    
+map_status_4(mol,mol['Shipping Fee By'],mol['Payment Type_y'],mol["Item Type"])
+
+mol['Fees Booked By']=np.where(mol['Temp4']=='YYY','Invoicing',"")
+
+mol.drop(['Temp4'],axis=1,inplace=True)
+
+# Create a Final status column
+mol["Final Status"]='billed'
+# Change item type to Donation if item category is Donation
+mol["Item Type"]=np.where(mol["Category"]=="Donation","Donation",mol["Item Type"])
+
+mol['Final Status']=np.where(mol['Program Name']=='TADA Incentive Card','Expense',mol['Final Status'])
+
+### FINAL STATUS COLUMN ADJUSTMENTS ###
+
+def map_status(data,column1,column2,column3):
+    item_type=[]
+    awb=[]
+    ref=[]
+    for index,values in column1.items():
+        if values=='Invoicing':
+            ref.append('Y')
+        else:
+            ref.append("")
+    for index, values in column2.items():
+        if not values.startswith('TAWB'):
+            awb.append('Y')
+        else:
+            awb.append("")
+    for index, values in column3.items():
+        if values=='item':
+            item_type.append("Y")
+        elif values=='physical voucher':
+            item_type.append('Y')
+        else:
+            item_type.append("")
+    data['Temp']=ref
+    data['Temp1']=awb
+    data['Temp2']=item_type
+    data['Temp4']=data['Temp']+data['Temp1']+data['Temp2']
+    data.drop(['Temp','Temp1','Temp2'],axis=1,inplace=True)
+
+map_status(mol,mol['Revenue/Expense Booked by'].fillna('0'),mol['AWB Number'].astype(str),
+          mol['Item Type'])
+
+mol['Final Status']=np.where(mol['Temp4']=='YYY','billed next month',mol['Final Status'])
+
+mol.drop(['Temp4'],axis=1,inplace=True)
+
+def map_status(data,column1,column2,column3,column4):
+    data['Temp']=column1+column2
+    item_type=[]
+    awb=[]
+    ref=[]
+    for index,values in data['Temp'].items():
+        if 'PrepaidAccounting' in values:
+            ref.append('Y')
+        elif 'PostpaidAccounting' in values:
+            ref.append('Y')
+        else:
+            ref.append("")
+    for index, values in column3.items():
+        if not values.startswith('TAWB'):
+            awb.append('Y')
+        else:
+            awb.append("")
+    for index, values in column4.items():
+        if 'item' in values:
+            item_type.append("Y")
+        elif 'physical voucher' in values:
+            item_type.append('Y')
+        else:
+            item_type.append("")
+    data['Temp']=ref
+    data['Temp1']=awb
+    data['Temp2']=item_type
+    data['Temp4']=data['Temp']+data['Temp1']+data['Temp2']
+    data.drop(['Temp','Temp1','Temp2'],axis=1,inplace=True)
+    
+map_status(mol,mol['Payment Type_y'].fillna('0'),mol['Revenue/Expense Booked by'].fillna('0'),mol['AWB Number'].astype(str),
+          mol['Item Type'])
+     
+mol['Final Status']=np.where(mol['Temp4']=='YYY','journal next month',mol['Final Status'])
+mol.drop(['Temp4'],axis=1,inplace=True)
+
+ref=[]
+for index,values in mol['Card No'].astype(str).items():
+    if len(values)==9:
+        ref.append('Y')
+    else:
+        ref.append("")
+mol['temp']=ref  
+
+mol['Final Status']=np.where(mol['temp']=='Y','report in egift used',mol['Final Status'])
+
+
+mol.drop(['temp'],axis=1,inplace=True)
+
+# 11. Compare Merchant and Item fulfilled by columns to return 'Deleted' status in Final status as long as Payment type is empty.
+
+
+ref=[]
+ref2=[]
+for index,values in mol['Merchant'].items():
+    if 'AQUA' in values:
+        ref.append(values[:4])
+#     elif "Aizen" in values:
+#         ref.append(values[:4])
+    elif "KAYA BERSAMA REBEL" in values:
+        ref.append("Mad fo")
+    elif "GC Korean BBQ" in values:
+        ref.append('GC Cul')
+    elif "ERHA" in values:
+        ref.append(values[:4])
+    elif "VELO" in values:
+        ref.append("VELO")
+    else:
+        ref.append(values[:5].replace(" ",''))
+
+mol['Temp']=ref
+
+for index,values in mol['Item Fulfilled By'].fillna("").items():
+    if 'AQUA' in values:
+        ref2.append(values[:4])
+#     elif "Aizen" in values:
+#         ref2.append(values[:4])
+    elif "Nouria" in values:
+        ref2.append(values[:4])
+    else: 
+        ref2.append(values[:5].replace(" ",''))
+
+
+mol['Temp2']=ref2
+
+mol['Temp3']=np.where(mol['Temp']==mol['Temp2'],"Y",'')
+mol.drop(['Temp','Temp2'],axis=1,inplace=True)
+
+
+mol['Final Status']=np.where(mol['Temp3']=='Y','delete',mol['Final Status'])
+mol.drop(['Temp3'],axis=1,inplace=True)
+
+# 12. For columns 'Merchant' and 'Item fulfilled by' with wording 'demo' on either side, return 'delete' in Final Status
+ref=[]
+
+for merchant,item_fulfilled in zip(mol["Merchant"],mol['Item Fulfilled By']):
+    if 'Demo' in merchant:
+        ref.append('Y')
+    elif 'demo' in merchant:
+        ref.append('Y')
+    elif 'DEMO' in merchant:
+        ref.append('Y')
+
+    elif 'Demo' in item_fulfilled:
+        ref.append('Y')
+    elif 'demo' in item_fulfilled:
+        ref.append('Y')
+    elif 'DEMO' in item_fulfilled:
+        ref.append('Y')
+    else:
+        ref.append('0')
+
+mol['Temp']=ref        
+mol['Final Status']=np.where(mol['Temp']=='0',mol['Final Status'],'delete')
+
+mol.drop(['Temp'],axis=1,inplace=True)
+
+# 13. Adjustments in Merchant and Final status columns (moving TADA employee perks as Internal in status)
+mol['Final Status']=np.where(mol['Merchant']=='TADA Employee Perks (TADA Employee Perks)','Internal',mol['Final Status'])
+mol['Final Status']=np.where(mol['Merchant']=='TADA Employee Perks - Malaysia (PT Aksi Visitama)',
+                             'Internal',mol['Final Status'])
+
+def map_status(data,column1,column2,column3):
+    item_type=[]
+    awb=[]
+    merchant=[]
+    for index,values in column1.items():
+        if values=='item':
+            item_type.append('Y')
+        elif values=='physical voucher':
+            item_type.append('Y')
+        else:
+            item_type.append("")
+    for index, values in column2.items():
+        if not values.startswith('TAWB'):
+            awb.append('Y')
+        else:
+            awb.append("")
+    for index, values in column3.items():
+        if 'TADA Employee Perks - Malaysia (PT Aksi Visitama)' in values:
+            merchant.append("Y")
+        elif 'TADA Employee Perks' in values:
+            merchant.append('Y')
+        else:
+            merchant.append("")
+    data['Temp']=item_type
+    data['Temp1']=awb
+    data['Temp2']=merchant
+    data['Temp4']=data['Temp']+data['Temp1']+data['Temp2']
+    data.drop(['Temp','Temp1','Temp2'],axis=1,inplace=True)
+
+map_status(mol,mol['Item Type'],mol['AWB Number'].astype(str),
+          mol['Merchant'])
+
+mol['Final Status']=np.where(mol['Temp4']=='YYY','internal next month',mol['Final Status'])
+
+mol.drop(['Temp4'],axis=1,inplace=True)
+
+# 14.Another adjustment in AKSI Visitama (Merchant Name) - to be marked Expense and Internal in Final status
+
+mol['Merchant']=np.where(mol['Program Name']=='TADA Retail General - NEW','Bussan Auto Finance',mol['Merchant'])
+mol['Final Status']=np.where(mol['Merchant']=='Bussan Auto Finance','billed',mol['Final Status'])
+mol['Final Status']=np.where(mol['Merchant']=='PT Aksi Visitama (PT Aksi Visitama)','Expense',mol['Final Status'])
+
+ref=[]
+ref2=[]
+for index,values in mol['Merchant'].items():
+    if 'PT Aksi Visitama (PT Aksi Visitama)' in values:
+        ref.append("Y")
+    else:
+        ref.append("")
+mol['T1']=ref
+
+for index,values in mol['Program Name'].astype(str).items():
+    if 'Spouse Birthday' in values:
+        ref2.append("Y")
+    elif "Family Birthday" in values:
+        ref2.append("Y")
+    else: 
+        ref2.append("")
+
+mol['T2']=ref2
+mol['T3']=mol["T1"]+mol['T2']
+
+
+mol['Final Status']=np.where(mol['T3']=='YY','Internal',mol['Final Status'])
+
+mol=mol.drop(['T1','T2','T3'],axis=1)
+
+# 15. Change the Final Status to 'recheck' if New status and Checking columns are also in 'recheck' state
+ref=[]
+for status,checking in zip(mol["New Status"],mol["Checking Pulsa/PLN/e-wallet"]):
+    if status=='Recheck' or checking=='Recheck':
+        ref.append('Recheck')
+    else:
+        ref.append('')
+mol['Temp']=ref
+
+mol['Final Status']=np.where(mol['Temp']=='Recheck','Recheck',mol['Final Status'])
+mol.drop(["Temp"],axis=1,inplace=True)
+
+# 16. Special adjustment for Magicpin, Exxon and DBO
+
+ref=[]
+ref2=[]
+ref3=[]
+ref4=[]
+for index,values in mol['Merchant'].items():
+    ref.append(values[:3])
+for index,values in mol['Item Fulfilled By'].items():
+    ref2.append(values[:3])
+mol['Temp']=ref
+mol['Temp2']=ref2
+
+mol['Temp3']=mol['Temp']+mol['Temp2']
+mol.drop(['Temp','Temp2'],axis=1,inplace=True)
+
+for index, values in mol['Temp3'].items():
+    if values=='ExxExx':
+        ref3.append('Y')
+    elif values=='DBODBO':
+        ref3.append('Y')
+    elif values=='MagMag':
+        ref3.append('Y')
+    elif values=="BlaBla":
+        ref3.append('Y')
+    else:
+        ref3.append("")
+mol['Temp3']=ref3
+
+for index, values in mol["New Status"].items():
+    if values=="Y":
+        ref4.append("Y")
+    else:
+        ref4.append("")
+mol['Temp4']=ref4
+mol['Temp4']=mol['Temp3']+mol['Temp4']
+
+mol['Final Status']=np.where(mol['Temp4']=="YY",'billed',mol['Final Status'])
+mol.drop(['Temp3',"Temp4"],axis=1,inplace=True)
+
+# 17. Mark TADA HAMPERS (Merchant) to Delete in Final Status
+mol["Final Status"]=np.where(mol["Merchant"]=="TADA. (TADA Hampers)" ,"delete",mol["Final Status"])
+
+mol['Final Status']=np.where(mol['Checking Pulsa/PLN/e-wallet']=='Recheck','Recheck',mol['Final Status'])
+# 18. For all 'take-out' in Checking column, change the final status to 'delete'
+mol['Final Status']=np.where(mol['Checking Pulsa/PLN/e-wallet']=='Take out','delete',mol['Final Status'])
+# 19. For all 'N' in New status column, change the final status to 'delete'
+mol['Final Status']=np.where(mol['New Status']=='N','delete',mol['Final Status'])
+
+# 20. Change Invoicing need to bill to Y if either Revenue booked by or Fees booked by says 'Invoicing'
+ref=[]
+ref2=[]
+for index,values in mol['Revenue/Expense Booked by'].items():
+    if values=="Invoicing":
+        ref.append("Y")
+    else:
+        ref.append("")
+mol['Temp']=ref
+
+for index,values in mol['Final Status'].items():
+    if values=="billed":
+        ref2.append("Y")
+    else:
+        ref2.append("")
+mol['Temp2']=ref2
+mol['Temp3']=mol["Temp"]+mol["Temp2"]
+
+mol['Invoicing need to bill']=np.where(mol['Temp3']=='YY','Y',"")
+mol.drop(['Temp',"Temp2",'Temp3'],axis=1,inplace=True)
+
+ref=[]
+ref2=[]
+for index,values in mol['Fees Booked By'].items():
+    if values=="Invoicing":
+        ref.append("Y")
+    else:
+        ref.append("")
+mol['Temp']=ref
+
+for index,values in mol['Final Status'].items():
+    if values=="billed":
+        ref2.append("Y")
+    else:
+        ref2.append("")
+mol['Temp2']=ref2
+mol['Temp3']=mol["Temp"]+mol["Temp2"]
+
+
+
+mol['Invoicing need to bill']=np.where(mol['Temp3']=='YY','Y',mol['Invoicing need to bill'])
+
+mol.drop(['Temp',"Temp2",'Temp3'],axis=1,inplace=True)
+
+# 21. Notes column according to merchant and dates of transaction
+
+mol["Days"]=mol['Transaction Date'].dt.day
+
+
+ref=[]
+
+for names,dates,status in zip(mol["Merchant"],mol["Days"],mol["Final Status"]):
+    if names=="Sanidata (PT. Sanidata Indonesia)" and dates<=15 and status=='billed':
+        ref.append("Cutoff Midmonth (1-15)")
+    elif names=="Sanidata (PT. Sanidata Indonesia)" and dates>=16 and status=='billed':
+        ref.append("Cutoff Midmonth (16-30/31)")
+    elif names=="Ranti (PT Citra Busana Indonesia)" and dates<=15 and status=='billed':
+        ref.append("Cutoff Midmonth (1-15)")
+    elif names=="Ranti (PT Citra Busana Indonesia)" and dates>=16 and status=='billed':
+        ref.append("Cutoff Midmonth (16-30/31)")
+    elif names=="Wall Street English (PT Wahana Semesta Ilmu)" and dates<=15 and status=='billed':
+        ref.append("Cutoff Midmonth (1-15)")
+    elif names=="Wall Street English (PT Wahana Semesta Ilmu)" and dates>=16 and status=='billed':
+        ref.append("Cutoff Midmonth (16-30/31)")
+    elif names=="Michelin (PT Michelin Indonesia)" and dates<=20 and status=='billed':
+        ref.append("Cutoff 1-20")
+    elif names=="Michelin (PT Michelin Indonesia)" and dates>=21 and status=='billed':
+        ref.append("Cutoff 21-31")
+    else:
+        ref.append("")
+        
+mol["Notes"]=ref
+mol.drop(['Days'],axis=1,inplace=True)
+
+# 22. Notes column according to Fees booked by Invoicing column
+
+mol['Notes']=np.where(mol["Fees Booked By"]=="Invoicing","Invoicing need to bill SHIPPING FEE only",mol["Notes"])
+
+
+# 23. Extract denom for all empty values in Denom column by extracting numbers from Variant column
+
+mol['Variant'] = mol['Variant'].str.replace('.','')
+
+
+mol['Temp']=mol["Variant"].str.extract('(\d+)')
+
+ref=[]
+for item,denom,number in zip(mol['Item Type'],mol['Denom'],mol['Temp']):
+    if item=='e-wallet' and denom==0:  
+        ref.append(number)
+    elif item=='pln' and denom==0:   
+        ref.append(number)
+    else:
+        ref.append(0.00)
+
+mol['Temp']=ref        
+mol['Temp']=mol['Temp'].astype(float)
+
+mol['Denom']=np.where(mol["Denom"]==0,mol["Temp"],mol['Denom'])
+
+mol.drop(['Temp'],axis=1,inplace=True)
+
+
+# 24. Create Final Price and Admin fee2 column to calculate real price+denom+admin fees
+
+final_price=[]
+admin_fee=[]
+for item,denom, price in zip(mol['Item Type'],mol["Denom"],mol["Price"]):
+    if item=="pln" and (price-denom)==0:
+        final_price.append(price)
+    elif item=="pln" and (price-denom)>0 and denom!=0:
+        final_price.append(denom)
+    elif item=="pln" and denom==0:
+        final_price.append(price)
+        
+    elif item=="e-wallet" and (price-denom)==0:
+        final_price.append(price)
+    elif item=="e-wallet" and (price-denom)>0 and denom!=0:
+        final_price.append(denom)
+    elif item=="e-wallet" and denom==0:
+        final_price.append(price)
+        
+    elif item=="pulsa" and (price-denom)==0:
+        final_price.append(price/1.1)
+    elif item=='pulsa' and (price-denom)>0 and denom!=0:
+        final_price.append(denom/1.1)
+    elif item=="pulsa" and (price-denom)<0 and denom!=0:
+        final_price.append(price/1.1)
+    elif item=='pulsa' and denom==0:
+        final_price.append(price/1.1)
+        
+    else:
+        final_price.append(0)
+        
+    if item=='pln' and (price-denom)==0:
+        admin_fee.append(0)
+    elif item=="pln" and (price-denom)>0 and denom!=0:
+        admin_fee.append(price-denom)
+    elif item=="pln" and denom==0:
+        admin_fee.append(0)
+        
+    elif item=='e-wallet' and (price-denom)==0:
+        admin_fee.append(0)
+    elif item=="e-wallet" and (price-denom)>0 and denom!=0:
+        admin_fee.append(price-denom)
+    elif item=="e-wallet" and denom==0:
+        admin_fee.append(0)
+        
+    elif item=="pulsa" and (price-denom)==0:
+        admin_fee.append(0)
+    elif item=='pulsa' and (price-denom)>0 and denom!=0:
+        admin_fee.append(price-denom)
+    elif item=="pulsa" and (price-denom)<0 and denom!=0:
+        admin_fee.append(0)
+    elif item=='pulsa' and denom==0:
+        admin_fee.append(0)
+        
+    else:
+        admin_fee.append(0)
+
+
+        
+final_price = [ '%.2f' % items for items in final_price ]
+admin_fee = [ '%.2f' % items for items in admin_fee ]
+
+
+mol.insert(19, "Final Price", final_price)
+#mol["Final Price"]=final_price
+mol["Admin 2"] = admin_fee
+mol["Admin Fee"]=mol["Admin Fee"]+mol["Admin 2"].astype(float)
+mol.drop(['Admin 2'],axis=1,inplace=True)
+
+mol["Final Price"]=np.where(mol['Final Price']=='0.00',mol['Price'],mol['Final Price'])
+mol["Sub Total"]=mol['Final Price']*mol["Qty"]
+
+### SAVE THE FINAL FILE ###
+
+mol.to_csv('test_dec6.csv',index=False)
+
