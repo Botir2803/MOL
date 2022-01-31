@@ -603,7 +603,7 @@ mol.drop(['Temp'],axis=1,inplace=True)
 
 final_price=[]
 admin_fee=[]
-for item,denom, price in zip(mol['Item Type'],mol["Denom"],mol["Price"]):
+for item,denom, price,variant in zip(mol['Item Type'],mol["Denom"],mol["Price"],mol['Variant']):
     if item=="pln" and (price-denom)==0:
         final_price.append(price)
     elif item=="pln" and (price-denom)>0 and denom!=0:
@@ -626,6 +626,16 @@ for item,denom, price in zip(mol['Item Type'],mol["Denom"],mol["Price"]):
         final_price.append(price/1.1)
     elif item=='pulsa' and denom==0:
         final_price.append(price/1.1)
+        
+#Fix the denom and final prices for Alfamart 25,000, Alfamart 50,000 and Evoucher Brastagi
+
+    elif item=='item' and variant=='Alfamart - 25000':
+        final_price.append(25000.00)
+    elif item=='item' and variant=='Alfamart - 50000':
+        final_price.append(50000.00)
+    elif item=='egift' and variant=='E-VOUCHER BRASTAGI SUPERMARKET 50000':
+        final_price.append(50000.00)
+    
         
     else:
         final_price.append(0)
@@ -653,6 +663,15 @@ for item,denom, price in zip(mol['Item Type'],mol["Denom"],mol["Price"]):
     elif item=='pulsa' and denom==0:
         admin_fee.append(0)
         
+#Fix the denom and final prices for Alfamart 25,000, Alfamart 50,000 and Evoucher Brastagi
+
+    elif item=='item' and variant=='Alfamart - 25000':
+        admin_fee.append(1000.00)
+    elif item=='item' and variant=='Alfamart - 50000':
+        admin_fee.append(5000.00)
+    elif item=='egift' and variant=='E-VOUCHER BRASTAGI SUPERMARKET 50000':
+        admin_fee.append(1000.00)
+        
     else:
         admin_fee.append(0)
 
@@ -669,7 +688,9 @@ mol["Admin Fee"]=mol["Admin Fee"]+mol["Admin 2"].astype(float)
 mol.drop(['Admin 2'],axis=1,inplace=True)
 
 mol["Final Price"]=np.where(mol['Final Price']=='0.00',mol['Price'],mol['Final Price'])
-mol["Sub Total"]=mol['Final Price']*mol["Qty"]
+
+mol["Sub Total"]=mol['Final Price'].astype(float)*mol["Qty"]
+mol["Total"]=mol['Sub Total'].astype(float)+mol['Admin Fee']+mol['Shipping Fee']+mol['Insurance Fee']+mol['Convenience Fee']+mol['Unique Code Fee']
 
 ### SAVE THE FINAL FILE ###
 
