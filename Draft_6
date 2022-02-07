@@ -295,6 +295,24 @@ mol['Final Status']=np.where(mol['temp']=='Y','report in egift used',mol['Final 
 
 mol.drop(['temp'],axis=1,inplace=True)
 
+#For merchant 'VELO' if payment type, revenue booked by and final status equals to "report in Egift used" change the final status
+#to 'Billed'
+
+ref=[]
+
+for merchant, payment_type, revenue,status in zip(mol['Merchant'],mol['Payment Type_y'],
+                                                 mol['Revenue/Expense Booked by'],mol['Final Status']):
+    if merchant[:4]=='VELO' and payment_type=='report in egift used' and revenue=='report in egift used'and status=='report in egift used':
+        ref.append('billed')
+    else:
+        ref.append("")
+mol['temp']=ref
+
+mol['Final Status']=np.where(mol['temp']=='billed','billed',mol['Final Status'])
+
+mol.drop(['temp'],axis=1,inplace=True)
+
+
 # 11. Compare Merchant and Item fulfilled by columns to return 'Deleted' status in Final status as long as Payment type is empty.
 
 
@@ -495,6 +513,18 @@ mol['Final Status']=np.where(mol['Checking Pulsa/PLN/e-wallet']=='Recheck','Rech
 mol['Final Status']=np.where(mol['Checking Pulsa/PLN/e-wallet']=='Take out','delete',mol['Final Status'])
 # 19. For all 'N' in New status column, change the final status to 'delete'
 mol['Final Status']=np.where(mol['New Status']=='N','delete',mol['Final Status'])
+
+# Change the Final Status to 'recheck' if New status is N and Checking wallet is 'OK'
+ref=[]
+for status,checking in zip(mol["New Status"],mol["Checking Pulsa/PLN/e-wallet"]):
+    if status=='N' and checking=='OK':
+        ref.append('Recheck')
+    else:
+        ref.append('')
+mol['Temp']=ref
+
+mol['Final Status']=np.where(mol['Temp']=='Recheck','Recheck',mol['Final Status'])
+mol.drop(["Temp"],axis=1,inplace=True)
 
 # 20. Change Invoicing need to bill to Y if either Revenue booked by or Fees booked by says 'Invoicing'
 ref=[]
